@@ -31,10 +31,19 @@
   .msg.err { background:#4a1f1f; }
   svg text { fill:var(--mut); font-size:10px; }
   .hid { opacity:.5; }
+  #timer { position:sticky; top:0; z-index:5; display:flex; gap:6px; align-items:center; background:#222a33; border-bottom:2px solid var(--line); padding:8px 12px; }
+  #timer[hidden] { display:none; }
+  #timer.reached { background:#16382a; border-bottom-color:var(--acc); }
+  #timer .t { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; min-width:70px; }
+  #timer .sp { flex:1; }
+  #timer button.on { background:var(--acc); color:#06210f; border-color:var(--acc); }
+  .row.done input { border-color:var(--acc); }
+  button.ok.on { background:var(--acc); color:#06210f; border-color:var(--acc); }
   label.chk { display:flex; gap:8px; align-items:center; min-height:44px; }
 </style>
 </head>
 <body>
+<div id="timer" hidden></div>
 <main id="app"></main>
 <nav id="nav"></nav>
 <script src="plan.js"></script>
@@ -87,7 +96,7 @@ const DRAFT_KEY = 'workoutlog.v1.draft';
 const ui = { tab: 'today', date: todayStr(), day: nextDay(), drafts: {}, extras: [], cardio: { done: false, minutes: '' }, msg: loadWarning ? { text: loadWarning, err: true } : null, progressId: null, adding: false };
 function saveDraft() {
   try {
-    if (hasDraft()) localStorage.setItem(DRAFT_KEY, JSON.stringify({ day: ui.day, date: ui.date, drafts: ui.drafts, extras: ui.extras, cardio: ui.cardio }));
+    if (hasDraft() || ui.rest.start !== null) localStorage.setItem(DRAFT_KEY, JSON.stringify({ day: ui.day, date: ui.date, drafts: ui.drafts, extras: ui.extras, cardio: ui.cardio, restStart: ui.rest.start, restTarget: ui.rest.target }));
     else localStorage.removeItem(DRAFT_KEY);
   } catch (e) { /* storage full: draft just isn't persisted */ }
 }
@@ -99,18 +108,34 @@ function restoreDraft() {
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
     if (d && store.plan.some((x) => x.day === d.day) && d.drafts && Array.isArray(d.extras) && d.cardio) {
-      ui.day = d.day; ui.date = d.date || ui.date; ui.drafts = d.drafts; ui.extras = d.extras; ui.cardio = d.cardio;
+      ui.day = d.day; ui.date = d.date || ui.date; ui.drafts = d.drafts; ui.extras = d.extras; ui.cardio = d.cardio; ui.rest.start = Number.isFinite(d.restStart) ? d.restStart : null; ui.rest.target = [60, 90, 120].includes(d.restTarget) ? d.restTarget : 90;
       ui.msg = ui.msg || { text: 'กู้คืนเซสชันที่ยังไม่ได้บันทึกแล้ว', err: false };
     }
   } catch (e) { localStorage.removeItem(DRAFT_KEY); }
 }
+ui.rest = { start: null, target: 90 };
 restoreDraft();
+function renderTimer() {
+  const el = document.getElementById('timer');
+  if (ui.rest.start === null) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = `<span class="t" id="tt"></span><span class="mut">พัก / เป้า</span>${[60, 90, 120].map((n) => `<button class="b${ui.rest.target === n ? ' on' : ''}" data-target="${n}">${n}</button>`).join('')}<span class="sp"></span><button class="b" data-act="stoprest">หยุด</button>`;
+  tickTimer();
+}
+function tickTimer() {
+  if (ui.rest.start === null) return;
+  const el = document.getElementById('timer'), tt = document.getElementById('tt'), ms = Date.now() - ui.rest.start;
+  if (tt) tt.textContent = Logic.formatTimer(ms);
+  el.classList.toggle('reached', Logic.restReached(ms, ui.rest.target));
+}
+setInterval(tickTimer, 500);
+document.addEventListener('visibilitychange', tickTimer);
 function nextDay() {
   const last = store.sessions[store.sessions.length - 1];
   return last ? (last.day % 5) + 1 : 1;
 }
 const dayObj = () => store.plan.find((d) => d.day === ui.day);
-const draftOf = (e) => (ui.drafts[e.id] = ui.drafts[e.id] || { altId: null, sets: Array.from({ length: e.sets }, () => ({ kg: '', reps: '' })) });
+const draftOf = (e) => (ui.drafts[e.id] = ui.drafts[e.id] || { altId: null, sets: Array.from({ length: e.sets }, () => ({ kg: '', reps: '', done: false })) });
 const effective = (e) => { const d = draftOf(e); const a = (e.alts || []).find((x) => x.id === d.altId); return a ? { id: a.id, name: a.name } : { id: e.id, name: e.name }; };
 const visibleExercises = () => [...dayObj().exercises.filter((e) => !e.hidden), ...ui.extras.filter((e) => e.day === ui.day)];
 
@@ -121,9 +146,10 @@ function exerciseCard(e) {
   const prevTxt = prev ? `ครั้งก่อน (${esc(prev.date)}): ${prev.sets.map((s) => esc(s.kg) + '×' + esc(s.reps)).join(', ')}` : 'ยังไม่มีประวัติ';
   const inc = prev && Logic.shouldIncrease(prev.sets, e.repMax, e.sets);
   const alts = e.alts ? `<select data-alt="${esc(e.id)}">${[`<option value="">${esc(e.name)} (เลือกท่า)</option>`, ...e.alts.map((a) => `<option value="${esc(a.id)}"${d.altId === a.id ? ' selected' : ''}>${esc(a.name)}</option>`)].join('')}</select>` : '';
-  const rows = d.sets.map((s, i) => `<div class="row"><span class="n">${i + 1}</span>
+  const rows = d.sets.map((s, i) => `<div class="row${s.done ? ' done' : ''}"><span class="n">${i + 1}</span>
     <input type="number" inputmode="decimal" step="any" placeholder="${prev && prev.sets[i] ? prev.sets[i].kg : 'กก.'}" value="${esc(s.kg)}" data-set="${esc(e.id)}:${i}:kg">
     <input type="number" inputmode="numeric" step="any" placeholder="${prev && prev.sets[i] ? prev.sets[i].reps : 'ครั้ง'}" value="${esc(s.reps)}" data-set="${esc(e.id)}:${i}:reps">
+    <button class="b x ok${s.done ? ' on' : ''}" data-done="${esc(e.id)}:${i}" aria-label="ทำเซ็ตนี้เสร็จ">✓</button>
     <button class="b x" data-del="${esc(e.id)}:${i}" aria-label="ลบเซ็ต">✕</button></div>`).join('');
   return `<div class="card"><h2>${esc(eff.name)}</h2>
     <div class="mut">เป้าหมาย ${esc(e.sets)} × ${esc(e.repMin)}–${esc(e.repMax)}</div>
@@ -196,6 +222,7 @@ function viewSettings() {
 function render() {
   const view = ui.tab === 'today' ? viewToday() : ui.tab === 'progress' ? viewProgress() : viewSettings();
   document.getElementById('app').innerHTML = view;
+  renderTimer();
   saveDraft();
   document.getElementById('nav').innerHTML = [['today', 'วันนี้'], ['progress', 'ความก้าวหน้า'], ['settings', 'ตั้งค่า']]
     .map(([k, t]) => `<button class="${ui.tab === k ? 'on' : ''}" data-tab="${k}">${t}</button>`).join('');
@@ -217,7 +244,7 @@ function saveSession() {
   if (!entries.length && !ui.cardio.done) { say('ยังไม่มีเซ็ตที่กรอก จึงไม่ได้บันทึก', true); return; }
   store.sessions.push({ id: 's-' + Date.now(), date: ui.date, day: ui.day, entries, cardio: { done: ui.cardio.done, minutes } });
   try { saveStore(store); } catch (e) { store.sessions.pop(); say('บันทึกไม่สำเร็จ (พื้นที่เก็บข้อมูลเต็มหรือถูกบล็อก) ลองส่งออกข้อมูลแล้วล้างพื้นที่', true); return; }
-  ui.drafts = {}; ui.extras = []; ui.cardio = { done: false, minutes: '' };
+  ui.drafts = {}; ui.extras = []; ui.cardio = { done: false, minutes: '' }; ui.rest.start = null;
   say('บันทึกแล้ว ✓');
 }
 
@@ -252,11 +279,27 @@ document.addEventListener('click', (ev) => {
       ui.day = Number(ds.day); ui.drafts = {}; ui.extras = []; ui.cardio = { done: false, minutes: '' }; ui.msg = null;
     }
   }
-  else if (ds.add) { const d = draftOf(exById(ds.add)); const l = d.sets[d.sets.length - 1]; d.sets.push({ kg: l ? l.kg : '', reps: l ? l.reps : '' }); }
+  else if (ds.done) {
+    const [id, i] = ds.done.split(':'), e = exById(id), row = draftOf(e).sets[Number(i)];
+    if (row.done) row.done = false;
+    else {
+      const empty = (v) => String(v) === '';
+      if (empty(row.kg) && empty(row.reps)) {
+        const prev = Logic.previousEntry(store.sessions, effective(e).id, ui.date);
+        const src = prev && (prev.sets[Number(i)] || prev.sets[prev.sets.length - 1]);
+        if (!src) { say('กรอกกก.และครั้งก่อนกดเสร็จ (ยังไม่มีค่าครั้งก่อนให้เติม)', true); render(); return; }
+        row.kg = src.kg; row.reps = src.reps;
+      } else if (Logic.partialSets([row])) { say('กรอกกก.และครั้งให้ครบก่อนกดเสร็จ', true); render(); return; }
+      row.done = true; ui.rest.start = Date.now(); ui.msg = null;
+    }
+  }
+  else if (ds.target) ui.rest.target = Number(ds.target);
+  else if (ds.act === 'stoprest') ui.rest.start = null;
+  else if (ds.add) { const d = draftOf(exById(ds.add)); const l = d.sets[d.sets.length - 1]; d.sets.push({ kg: l ? l.kg : '', reps: l ? l.reps : '', done: false }); }
   else if (ds.del) { const [id, i] = ds.del.split(':'); draftOf(exById(id)).sets.splice(Number(i), 1); }
   else if (ds.useprev) {
     const e = exById(ds.useprev), prev = Logic.previousEntry(store.sessions, effective(e).id, ui.date);
-    if (prev) draftOf(e).sets = prev.sets.map((s) => ({ kg: s.kg, reps: s.reps }));
+    if (prev) draftOf(e).sets = prev.sets.map((s) => ({ kg: s.kg, reps: s.reps, done: false }));
   }
   else if (ds.rename) { const e = findExercise(store, ds.rename); const n = prompt('ชื่อท่าใหม่', e.name); if (n) { renameExercise(store, ds.rename, n); saveStore(store); } }
   else if (ds.hide) { const e = findExercise(store, ds.hide); setHidden(store, ds.hide, !e.hidden); saveStore(store); }

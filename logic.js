@@ -107,5 +107,15 @@
     return null;
   }
 
-  return { weekStart, previousEntry, shouldIncrease, cleanSets, partialSets, weeklyStats, validateImport, idForName };
+  function formatTimer(ms) {
+    const t = Math.max(0, Math.floor(ms / 1000));
+    const pad = (n) => String(n).padStart(2, '0');
+    return pad(Math.floor(t / 60)) + ':' + pad(t % 60);
+  }
+
+  function restReached(elapsedMs, targetSec) {
+    return elapsedMs >= targetSec * 1000;
+  }
+
+  return { formatTimer, restReached, weekStart, previousEntry, shouldIncrease, cleanSets, partialSets, weeklyStats, validateImport, idForName };
 });
